@@ -165,7 +165,7 @@ pkg_list_installed() {
     # rpm world: userinstalled keeps explicit choices, not the dep tree.
     # Strip .arch, then the trailing version-release dash fields.
     if cmd_exists dnf; then
-      dnf history userinstalled 2>/dev/null |
+      dnf repoquery --userinstalled 2>/dev/null |
         awk '{sub(/\.[^.]+$/, ""); n = split($0, f, "-"); if ((n) > 2) {s = f[1]; for (i = 2; i < n - 1; i++) s = s "-" f[i]; print s} else print}'
     fi
     ;;

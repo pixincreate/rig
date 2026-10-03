@@ -65,7 +65,7 @@ install_rust_tools() {
             skipped=$((skipped + 1))
         else
             echo "[INFO] Installing: $tool"
-            if cargo install "$tool"; then
+            if cargo install --locked "$tool"; then
                 echo "[SUCCESS] Installed: $tool"
                 installed=$((installed + 1))
             else

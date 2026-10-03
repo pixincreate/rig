@@ -17,10 +17,10 @@ cat >"$STUB_BIN/rpm" <<EOF
 [[ "\$1" == "-q" ]] && grep -qxF "\$2" "$STATE"
 EOF
 
-# dnf history userinstalled: report state as explicitly-installed packages
+# dnf repoquery --userinstalled: report state as explicitly-installed packages
 cat >"$STUB_BIN/dnf" <<EOF
 #!/bin/bash
-if [[ "\$1" == "history" ]]; then
+if [[ "\$1" == "repoquery" ]]; then
   cat "$STATE"
   exit 0
 fi

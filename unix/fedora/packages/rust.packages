@@ -1,5 +1,6 @@
 # Cargo tools
 
+atuin
 capsync
 cargo-audit
 cargo-cache

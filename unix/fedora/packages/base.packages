@@ -1,7 +1,6 @@
 # Base system packages
 # Core utilities and shell tools
 
-atuin
 git
 wget
 curl
@@ -17,7 +16,6 @@ fd-find
 fzf
 zoxide
 starship
-atuin
 tealdeer
 direnv
 tmux
