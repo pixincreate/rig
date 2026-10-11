@@ -103,3 +103,23 @@ assert_success "rig-llama references the prompt file config" \
 python3 -m py_compile "$proxy"
 assert_success "rig-llama-proxy compiles" python3 -m py_compile "$proxy"
 assert_success "rig-llama-proxy self-test passes" "$proxy" --self-test
+
+section "rig-install runs modules through the platform setup script"
+
+install_cmd="$RIG_REPO/unix/common/libexec/rig-install"
+assert_success "common rig-install is executable" test -x "$install_cmd"
+assert_success "common rig-install has summary" grep -q 'rig:summary=' "$install_cmd"
+assert_success "common rig-install has usage" grep -q 'rig:usage=' "$install_cmd"
+assert_failure "no platform copies of rig-install remain" \
+  ls "$RIG_REPO/unix/fedora/libexec/rig-install" "$RIG_REPO/unix/macos/libexec/rig-install" 2>/dev/null
+
+assert_output_contains "no arguments prints usage" "Usage: rig install" "$install_cmd"
+assert_output_contains "--help points at the platform setup script" "-setup --only" "$install_cmd" --help
+
+# --list must print runnable module names, so no line may keep the .sh suffix
+# and non-module payload files must not appear.
+list_file=$(mktemp)
+"$install_cmd" --list > "$list_file" 2>&1
+assert_success "--list prints module paths" grep -qE '^config/' "$list_file"
+assert_failure "--list omits .sh payload files" grep -q '\.sh$' "$list_file"
+rm -f "$list_file"

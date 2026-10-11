@@ -1,0 +1,66 @@
+#!/bin/bash
+# rig:summary=Run installer modules through the platform setup script
+# rig:usage=rig install <module> [module...] | rig install --list
+
+set -eEuo pipefail
+
+RIG_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RIG_PATH="$(cd "$RIG_BIN/../../.." && pwd)"
+
+# Shared worker: the platform comes from the dispatcher. Fall back to the
+# running kernel when the script is called directly.
+if [[ -z ${RIG_PLATFORM:-} ]]; then
+  case "$(uname -s)" in
+    Darwin) RIG_PLATFORM="macos" ;;
+    *) RIG_PLATFORM="fedora" ;;
+  esac
+fi
+export RIG_PLATFORM
+
+SETUP="$RIG_PATH/unix/$RIG_PLATFORM/${RIG_PLATFORM}-setup"
+INSTALL_DIR="$RIG_PATH/unix/$RIG_PLATFORM/install"
+
+usage() {
+  cat <<EOF
+Usage: rig install <module> [module...]
+       rig install --list
+
+Run one or more installer modules through ${RIG_PLATFORM}-setup --only.
+
+Examples:
+  rig install keepass
+  rig install config/keepass
+  rig install config/hardware/asus packaging/flatpak
+
+Run 'rig install --list' to see the available modules.
+EOF
+}
+
+list_modules() {
+  find "$INSTALL_DIR" -name '*.sh' -type f | sort | sed "s|^$INSTALL_DIR/||; s|\.sh\$||"
+}
+
+case "${1:-}" in
+  ""|-h|--help)
+    usage
+    exit 0
+    ;;
+  --list|-l)
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+      echo "[ERROR] Install directory not found: $INSTALL_DIR" >&2
+      exit 1
+    fi
+    list_modules
+    exit 0
+    ;;
+esac
+
+if [[ ! -x "$SETUP" ]]; then
+  echo "[ERROR] Setup script not found or not executable: $SETUP" >&2
+  exit 1
+fi
+
+for module in "$@"; do
+  echo "[INFO] Installing module: $module"
+  "$SETUP" --only "$module"
+done
