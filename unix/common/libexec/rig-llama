@@ -20,23 +20,56 @@ cfg() {
   jq -r "$1 // empty" "$config_file" 2>/dev/null
 }
 
+# Default llama-server flags from .llama.server_args (array, optional)
+cfg_server_args() {
+  command -v jq &>/dev/null || return 0
+  [[ -f "$config_file" ]] || return 0
+  jq -r '(.llama.server_args // [])[]?' "$config_file" 2>/dev/null
+}
+
+# Ordered model chain from .llama.model. An array is walked in order; a bare
+# string is accepted as a one-entry chain so an older config keeps working.
+cfg_models() {
+  command -v jq &>/dev/null || return 0
+  [[ -f "$config_file" ]] || return 0
+  jq -r '(.llama.model // empty) | if type == "array" then .[] else . end' "$config_file" 2>/dev/null
+}
+
 resolved_model=""
 resolved_is_hf=false
 
-resolve_model() {
-  local requested="${1:-}"
-  local model="$requested"
+# llama.cpp caches remote models under this layout, so a cached repo needs no
+# network check and stays usable offline.
+hf_cache_dir() {
+  local repo="${1%%:*}"
+  echo "${XDG_CACHE_HOME:-$HOME/.cache}/huggingface/hub/models--${repo//\//--}"
+}
 
-  if [[ -z $model ]]; then
-    model=$(cfg ".llama.model")
+hf_model_available() {
+  local ref="$1"
+  local cache
+  cache=$(hf_cache_dir "$ref")
+
+  if [[ -d "$cache/snapshots" ]] \
+    && find "$cache/snapshots" -mindepth 2 -maxdepth 2 -type f -print -quit 2>/dev/null | grep -q .; then
+    return 0
   fi
 
-  if [[ -z $model ]]; then
-    echo "[ERROR] No model given and .llama.model is not set in $config_file"
-    return 1
-  fi
+  # Without curl, do not reject every remote model just because we cannot probe.
+  command -v curl &>/dev/null || return 0
 
-  # Local file: absolute path or bare name inside models_dir
+  local -a probe=(--silent --fail --location --max-time 10 --output /dev/null)
+  if [[ -n ${HF_TOKEN:-} ]]; then
+    probe+=(--header "Authorization: Bearer $HF_TOKEN")
+  fi
+  curl "${probe[@]}" "https://huggingface.co/api/models/${ref%%:*}" &>/dev/null
+}
+
+# Sets resolved_model/resolved_is_hf. Returns 1 when the entry is unusable.
+resolve_candidate() {
+  local model="$1"
+  resolved_is_hf=false
+
   if [[ $model == /* && -f "$model" ]]; then
     resolved_model="$model"
     return 0
@@ -47,13 +80,48 @@ resolve_model() {
   fi
 
   # Anything else containing a slash is a Hugging Face ref (repo or repo:quant)
-  if [[ $model == */* ]]; then
+  if [[ $model == */* ]] && hf_model_available "$model"; then
     resolved_model="$model"
     resolved_is_hf=true
     return 0
   fi
 
-  echo "[ERROR] Model not found: $model"
+  return 1
+}
+
+resolve_model() {
+  local requested="${1:-}"
+
+  # An explicit argument names one model. It is not a chain: resolve or fail.
+  if [[ -n $requested ]]; then
+    if resolve_candidate "$requested"; then
+      return 0
+    fi
+    echo "[ERROR] Model not found or unavailable: $requested"
+    return 1
+  fi
+
+  local -a chain=()
+  local model
+  while IFS= read -r model; do
+    if [[ -n $model ]]; then
+      chain+=("$model")
+    fi
+  done < <(cfg_models)
+
+  if [[ ${#chain[@]} -eq 0 ]]; then
+    echo "[ERROR] No model given and .llama.model is not set in $config_file"
+    return 1
+  fi
+
+  for model in "${chain[@]}"; do
+    if resolve_candidate "$model"; then
+      return 0
+    fi
+    echo "[WARN] Skipping unusable model: $model" >&2
+  done
+
+  echo "[ERROR] No usable model in .llama.model ($config_file)" >&2
   return 1
 }
 
@@ -64,13 +132,20 @@ usage() {
   echo "  server [model] [flags]   Start llama-server (default: .llama.model from config.json)"
   echo "                           If .llama.system_prompt_file exists, serves through the"
   echo "                           rig-llama-proxy so it is injected before harness prompts."
+  echo "                           .llama.server_args from config.json is applied first;"
+  echo "                           flags you pass here come last and win."
   echo "  chat [model] [flags]     Start llama-cli in interactive chat mode"
-  echo "  list             List downloaded models"
+  echo "  list             Show the configured model chain and downloaded models"
   echo "  pull <url>       Download a model into $models_dir"
   echo ""
   echo "Model can be a file in $models_dir, an absolute path, or a Hugging Face ref"
   echo "like ggml-org/gemma-4-E4B-it-GGUF:Q4_0 (downloaded and cached by llama.cpp)."
-  echo "Extra flags are forwarded to llama-server/llama-cli in any position."
+  echo "Put the model before any flag: rig llama server model.gguf -ngl 20."
+  echo "Put .llama.server_args from config.json to make flags permanent."
+  echo ""
+  echo "With no model argument, .llama.model is an ordered chain. Each entry is"
+  echo "tried in order and the first usable one wins; unusable entries are"
+  echo "skipped with a warning. rig llama list shows the chain."
   exit 1
 }
 
@@ -81,13 +156,18 @@ fi
 command="$1"
 shift
 
-# First bare arg selects the model; dash-args are forwarded to llama-server/cli
+# The model is the first bare argument, and it must come before any flag.
+# Everything from the first flag onward is forwarded verbatim, so flags that
+# take a separate value (-ngl 20, -c 4096) keep their value instead of having
+# it mistaken for the model. Use --model to pass a model alongside flags.
 model_arg=""
 extra_args=()
+seen_flag=false
 for arg in "$@"; do
   if [[ $arg == -* ]]; then
+    seen_flag=true
     extra_args+=("$arg")
-  elif [[ -z $model_arg ]]; then
+  elif [[ $seen_flag == false && -z $model_arg ]]; then
     model_arg="$arg"
   else
     extra_args+=("$arg")
@@ -130,7 +210,17 @@ case "$command" in
       fi
     fi
 
-    server_cmd+=(--host "$host" --port "$listen_port" ${extra_args[@]+"${extra_args[@]}"})
+    server_args=()
+    while IFS= read -r arg; do
+      if [[ -n $arg ]]; then
+        server_args+=("$arg")
+      fi
+    done < <(cfg_server_args)
+
+    # Config flags first, CLI flags last: llama-server takes the last value
+    # for scalar options, so an explicit flag always overrides the config.
+    server_cmd+=(--host "$host" --port "$listen_port" \
+      ${server_args[@]+"${server_args[@]}"} ${extra_args[@]+"${extra_args[@]}"})
 
     if [[ -n $proxy_pid ]]; then
       echo "Harnesses connect to http://$host:$port/v1 (llama-server binds 127.0.0.1:$internal)"
@@ -154,7 +244,30 @@ case "$command" in
     ;;
 
   list)
-    find "$models_dir" -maxdepth 1 -type f -name "*.gguf" -printf "  %f\n" 2>/dev/null || ls -1 "$models_dir"/*.gguf 2>/dev/null || echo "No models in $models_dir"
+    echo "Configured chain (.llama.model in $config_file):"
+    listed=0
+    while IFS= read -r model; do
+      if [[ -n $model ]]; then
+        echo "  $model"
+        listed=$((listed + 1))
+      fi
+    done < <(cfg_models)
+    if ((listed == 0)); then
+      echo "  (none)"
+    fi
+
+    echo ""
+    echo "Downloaded models in $models_dir:"
+    listed=0
+    while IFS= read -r path; do
+      if [[ -n $path ]]; then
+        echo "  $(basename "$path")"
+        listed=$((listed + 1))
+      fi
+    done < <(find "$models_dir" -maxdepth 1 -type f -name "*.gguf" 2>/dev/null)
+    if ((listed == 0)); then
+      echo "  (none)"
+    fi
     ;;
 
   pull)

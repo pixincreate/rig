@@ -112,11 +112,23 @@ relative to the rig repository.
 
 Each platform has a `unix/{fedora,macos}/config.json` holding defaults for
 platform features (e.g. the `llama` block: model, host, port,
-system_prompt_file). Read it with `jq` and guard for missing keys:
+system_prompt_file, server_args). Read it with `jq` and guard for missing
+keys:
 
 ```bash
 model=$(jq -r '.llama.model // empty' "$RIG_PATH/unix/$RIG_PLATFORM/config.json")
 ```
+
+For a list-valued key, guard the array before iterating so a missing key
+stays empty instead of failing under `set -e`:
+
+```bash
+jq -r '(.llama.server_args // [])[]?' "$RIG_PATH/unix/$RIG_PLATFORM/config.json"
+```
+
+Push user-facing knobs into config so the common command takes no arguments.
+Anything a user might type once belongs on the command line; anything they
+would retype belongs in config.
 
 Common `libexec/` scripts must never hardcode platform values — resolve
 them from config so one script serves both platforms.
@@ -140,18 +152,79 @@ files — keep it clean. Gotchas:
 
 ### rig llama — local LLM stack (unix/common/libexec/rig-llama)
 
-Wrapper around llama.cpp binaries (`llama-server`, `llama-cli`). Defaults
-come from `config.json` `.llama` block per platform (model, host, port,
-system_prompt_file) — not hardcoded.
+Wrapper around llama.cpp binaries (`llama-server`, `llama-cli`). Everything
+comes from the `config.json` `.llama` block per platform, so the common case
+is one bare command with no arguments.
 
-- `rig llama pull <repo:quant>` — pull a GGUF from Hugging Face into
-  `~/.local/share/llama.cpp/models`
-- `rig llama list` / `rig llama chat [model] [flags]` — list models /
-  interactive CLI chat
-- `rig llama server [model] [flags]` — OpenAI-compatible API on 127.0.0.1;
-  model resolution: explicit arg → bare name in models dir → HF spec
-  (contains `/`) → config default; extra flags pass through to
-  llama-server (e.g. `--ctx-size 8192 -ngl 20`)
+| Key | Purpose |
+| --- | --- |
+| `.llama.model` | **Ordered chain** of models. First usable entry wins |
+| `.llama.host` / `.llama.port` | Bind address. Public port is the proxy; llama-server binds port+1 |
+| `.llama.system_prompt_file` | Base system prompt injected by the proxy |
+| `.llama.server_args` | Permanent `llama-server` flags. A JSON array of strings |
+
+- `rig llama pull <url>` — download a GGUF into `~/.local/share/llama.cpp/models`
+- `rig llama list` — show the configured chain and the downloaded models
+- `rig llama server` — start the first usable model from the chain
+- `rig llama chat` — interactive CLI on the first usable model
+- `rig llama server model.gguf` — one-off model override
+
+Each chain entry is resolved in this order: absolute path → bare name in the
+models dir → Hugging Face ref (any entry containing `/`). Local files become
+`--model <path>`; Hugging Face refs become `-hf <repo:quant>`, which downloads
+and caches on first run.
+
+**The chain is a fallback list, not a list of alternatives.** Entries are tried
+in order and the first one that resolves wins. An entry is skipped with a
+`[WARN]` when its local file is missing, or when a remote ref fails its
+reachability check. Only when every entry fails does the command exit non-zero.
+
+A remote ref is checked with one short `curl` against the Hugging Face API
+before use, unless the repo is already in llama.cpp's cache under
+`${XDG_CACHE_HOME:-~/.cache}/huggingface/hub`. A cached model therefore stays
+usable offline, and repeated starts cost no network call. Set `HF_TOKEN` in the
+environment for gated repos; the probe sends it as a bearer token.
+
+```json
+"model": [
+  "unsloth/Qwen3-1.7B-GGUF:Q4_K_M",
+  "ggml-org/gemma-4-E4B-it-GGUF:Q4_0"
+]
+```
+
+A bare string is still accepted and is treated as a one-entry chain. An explicit
+model argument is **not** part of the chain: if it fails to resolve, the command
+errors out rather than silently substituting another model.
+
+**Argument order: model first, then flags.** The parser takes the model only
+from arguments that appear *before the first flag*. Everything from the first
+flag onward is forwarded verbatim. This keeps the value of a valued flag from
+being mistaken for the model:
+
+```bash
+rig llama server -ngl 20                    # OK: -ngl 20 forwarded, config model used
+rig llama server model.gguf -ngl 20         # OK: model.gguf used, -ngl 20 forwarded
+rig llama server --model model.gguf -ngl 20 # OK: --model reaches llama-server as-is
+```
+
+Note the ordering is load-bearing. `rig llama server model.gguf -ngl 20` works
+only because the model is consumed first, leaving `20` to fall through as a
+flag value. If the model came after the flag, the parser would stop looking
+and use the config default.
+
+**Prefer config over flags.** Put anything you always want into
+`.llama.server_args`. Those are applied *before* command-line flags, so a flag
+you type ad hoc still wins for that run:
+
+```json
+"server_args": ["-c", "4096", "-np", "1"]
+```
+
+`-c`/`--ctx-size` is the context window and `-np` is the number of parallel
+server slots. llama-server defaults to `-np 4`, which multiplies the KV cache
+by four; on a small machine set `-np 1`. Do not add `-ngl` (GPU layer
+offload) without measuring: on an Intel iGPU it raised prompt throughput
+slightly but made decoding slower and the CPU hotter.
 
 **System-prompt proxy** (`rig-llama-proxy`, python3 stdlib): if the config'd
 `system_prompt_file` exists, `server` starts the proxy on the public port
