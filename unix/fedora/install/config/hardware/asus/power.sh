@@ -40,8 +40,12 @@ real_user="${SUDO_USER:-$USER}"
 
 if [[ "$real_user" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   user_systemd_dir="/home/$real_user/.config/systemd/user"
+  user_bin_dir="/home/$real_user/.local/bin"
 
-  mkdir -p "$user_systemd_dir"
+  mkdir -p "$user_systemd_dir" "$user_bin_dir"
+  install -m 0755 "$RIG_INSTALL/config/hardware/asus/bin/asus-profile-notify" \
+    "$user_bin_dir/asus-profile-notify.sh"
+
   tee "$user_systemd_dir/asus-profile-notify@.service" >/dev/null <<'EOF'
 [Unit]
 Description=ASUS Profile Change Notification for %i
