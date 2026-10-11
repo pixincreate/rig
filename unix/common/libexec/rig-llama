@@ -38,6 +38,51 @@ cfg_models() {
 resolved_model=""
 resolved_is_hf=false
 
+self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+state_dir="${LLAMA_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/rig-llama-$UID}"
+pid_file="$state_dir/server.pid"
+log_file="$state_dir/server.log"
+
+resolved_host() {
+  local h
+  h="$(cfg ".llama.host")"
+  [[ -n $h ]] || h="127.0.0.1"
+  echo "$h"
+}
+
+resolved_port() {
+  local p
+  p="$(cfg ".llama.port")"
+  [[ -n $p ]] || p=8080
+  echo "$p"
+}
+
+health_check() {
+  curl --silent --fail --max-time 3 \
+    "http://$(resolved_host):$(resolved_port)/health" &>/dev/null
+}
+
+# Echo the wrapper PID when a server we started is still alive. With no
+# system_prompt_file the wrapper execs, so the same PID carries either name.
+# Checking the command line keeps a recycled PID from being killed.
+running_pid() {
+  local pid cmd
+  [[ -f "$pid_file" ]] || return 1
+  pid=$(cat "$pid_file" 2>/dev/null)
+  if [[ -z $pid ]] || ! kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+  if [[ -r "/proc/$pid/cmdline" ]]; then
+    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+  else
+    cmd=$(ps -p "$pid" -o command= 2>/dev/null)
+  fi
+  if [[ $cmd != *rig-llama* && $cmd != *llama-server* ]]; then
+    return 1
+  fi
+  echo "$pid"
+}
+
 # llama.cpp caches remote models under this layout, so a cached repo needs no
 # network check and stays usable offline.
 hf_cache_dir() {
@@ -129,7 +174,10 @@ usage() {
   echo "Usage: rig llama <command> [args]"
   echo ""
   echo "Commands:"
-  echo "  server [model] [flags]   Start llama-server (default: .llama.model from config.json)"
+  echo "  start            Start the server in the background and wait until healthy"
+  echo "  stop             Stop a server started by 'rig llama start'"
+  echo "  status           Report whether a background server is running"
+  echo "  server [model] [flags]   Run llama-server in the foreground"
   echo "                           If .llama.system_prompt_file exists, serves through the"
   echo "                           rig-llama-proxy so it is injected before harness prompts."
   echo "                           .llama.server_args from config.json is applied first;"
@@ -175,12 +223,100 @@ for arg in "$@"; do
 done
 
 case "$command" in
+  start)
+    existing=$(running_pid || true)
+    if [[ -n $existing ]]; then
+      echo "[INFO] llama server already running (pid $existing)"
+      echo "[INFO] http://$(resolved_host):$(resolved_port)/v1"
+      exit 0
+    fi
+
+    mkdir -p "$state_dir"
+    timeout_s="${LLAMA_START_TIMEOUT:-120}"
+    nohup "$self_path" server > "$log_file" 2>&1 < /dev/null &
+    started_pid=$!
+    echo "$started_pid" > "$pid_file"
+    echo "[INFO] starting llama server (pid $started_pid), log: $log_file"
+
+    deadline=$(($(date +%s) + timeout_s))
+    while :; do
+      if health_check; then
+        echo "[SUCCESS] llama server ready at http://$(resolved_host):$(resolved_port)/v1"
+        exit 0
+      fi
+      if ! kill -0 "$started_pid" 2>/dev/null; then
+        echo "[ERROR] llama server exited during startup" >&2
+        tail -n 15 "$log_file" >&2
+        rm -f "$pid_file"
+        exit 1
+      fi
+      if (($(date +%s) >= deadline)); then
+        break
+      fi
+      sleep 2
+    done
+
+    echo "[WARN] not ready after ${timeout_s}s. It may still be downloading a model." >&2
+    echo "[WARN] See $log_file. Stop it with: rig llama stop" >&2
+    exit 1
+    ;;
+
+  stop)
+    pid=$(running_pid || true)
+    if [[ -z $pid ]]; then
+      rm -f "$pid_file"
+      echo "[INFO] llama server is not running"
+      exit 0
+    fi
+
+    # The wrapper's trap tears down llama-server and the prompt proxy with it.
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "[WARN] server ignored SIGTERM, sending SIGKILL"
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+    rm -f "$pid_file"
+    echo "[SUCCESS] llama server stopped"
+    ;;
+
+  status)
+    pid=$(running_pid || true)
+    if [[ -z $pid ]]; then
+      echo "[INFO] llama server is not running"
+      exit 1
+    fi
+    echo "llama server is running (pid $pid)"
+    if health_check; then
+      echo "health:  ok at http://$(resolved_host):$(resolved_port)/v1"
+    else
+      echo "health:  not responding yet"
+    fi
+    total_kb=0
+    for target in "$pid" $(pgrep -P "$pid" 2>/dev/null); do
+      rss=$(ps -o rss= -p "$target" 2>/dev/null | tr -d ' ')
+      if [[ -n $rss ]]; then
+        total_kb=$((total_kb + rss))
+      fi
+    done
+    if ((total_kb > 0)); then
+      echo "memory: $((total_kb / 1024)) MB resident (server plus prompt proxy)"
+    fi
+    if [[ -r "$log_file" ]]; then
+      awk '/Starting llama-server on/ && !seen {line=$0; seen=1} END {if (seen) print "model:   " substr(line, index(line, "on ") + 3)}' \
+        "$log_file"
+    fi
+    ;;
+
   server)
     resolve_model "$model_arg" || exit 1
-    host="$(cfg ".llama.host")"
-    port="$(cfg ".llama.port")"
-    [[ -n $host ]] || host="127.0.0.1"
-    [[ -n $port ]] || port=8080
+    host="$(resolved_host)"
+    port="$(resolved_port)"
 
     server_cmd=(llama-server)
     if [[ $resolved_is_hf == true ]]; then

@@ -165,9 +165,25 @@ is one bare command with no arguments.
 
 - `rig llama pull <url>` — download a GGUF into `~/.local/share/llama.cpp/models`
 - `rig llama list` — show the configured chain and the downloaded models
-- `rig llama server` — start the first usable model from the chain
+- `rig llama start` — run the server in the **background** and return when healthy
+- `rig llama stop` — stop a server started by `start`
+- `rig llama status` — report running state, health, memory, and active model
+- `rig llama server` — run in the **foreground** until you press Ctrl-C
 - `rig llama chat` — interactive CLI on the first usable model
-- `rig llama server model.gguf` — one-off model override
+
+Prefer `start` over `server` for anything unattended. The model is demand
+paged, so a running server holds roughly 115 MB resident and about 0% CPU when
+idle, but stopping it returns that memory immediately. State lives in
+`${XDG_RUNTIME_DIR:-/tmp}/rig-llama-$UID`, so a stale pid file cannot survive a
+logout.
+
+`start` polls `/health` and returns only once the API answers, with
+`LLAMA_START_TIMEOUT` seconds to spare (default 120). Exceeding it warns
+instead of failing, because a cold model download legitimately takes minutes.
+`stop` signals the wrapper, whose trap tears down both llama-server and the
+prompt proxy; it falls back to SIGKILL only if SIGTERM is ignored. The recorded
+pid is validated against its command line before anything is killed, so a
+recycled pid is never a target.
 
 Each chain entry is resolved in this order: absolute path → bare name in the
 models dir → Hugging Face ref (any entry containing `/`). Local files become

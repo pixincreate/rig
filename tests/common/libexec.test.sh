@@ -299,6 +299,82 @@ assert_output_contains "list shows downloaded models" "downloaded.gguf" cat "$fl
 
 rm -rf "$fl_dir"
 
+section "rig-llama start / stop / status manage a background server"
+
+lc_dir=$(mktemp -d)
+mkdir -p "$lc_dir/unix/fedora" "$lc_dir/unix/common/libexec" "$lc_dir/models"
+cp "$RIG_REPO/unix/common/libexec/rig-llama" "$lc_dir/unix/common/libexec/rig-llama"
+chmod +x "$lc_dir/unix/common/libexec/rig-llama"
+
+# No system_prompt_file, so the wrapper execs: the recorded PID keeps its
+# identity but its command line becomes llama-server.
+cat > "$lc_dir/unix/fedora/config.json" <<'JSON'
+{
+  "llama": {
+    "model": ["local.gguf"],
+    "host": "127.0.0.1",
+    "port": 8080
+  }
+}
+JSON
+: > "$lc_dir/models/local.gguf"
+
+# Health always answers, so start does not wait on a real server.
+printf '#!/bin/bash\nexit 0\n' > "$lc_dir/curl"
+chmod +x "$lc_dir/curl"
+
+# Stand in for llama-server: report the args, then stay alive until SIGTERM.
+cat > "$lc_dir/llama-server" <<'SH'
+#!/bin/bash
+echo "stub server args: $*"
+trap 'exit 0' TERM INT
+while true; do sleep 1; done
+SH
+chmod +x "$lc_dir/llama-server"
+
+lc() {
+  env RIG_PATH="$lc_dir" RIG_PLATFORM=fedora PATH="$lc_dir:$PATH" \
+    LLAMA_MODELS_DIR="$lc_dir/models" LLAMA_STATE_DIR="$lc_dir/state" \
+    LLAMA_START_TIMEOUT=5 "$lc_dir/unix/common/libexec/rig-llama" "$@" 2>&1
+}
+
+assert_success "status reports not running before start" \
+  env RIG_PATH="$lc_dir" RIG_PLATFORM=fedora PATH="$lc_dir:$PATH" \
+    LLAMA_MODELS_DIR="$lc_dir/models" LLAMA_STATE_DIR="$lc_dir/state" \
+    bash -c "! '$lc_dir/unix/common/libexec/rig-llama' status"
+
+lc stop > "$lc_dir/stop-empty.out"
+assert_output_contains "stop is safe when nothing runs" "not running" cat "$lc_dir/stop-empty.out"
+
+lc start > "$lc_dir/start.out"
+assert_success "start writes a pid file" test -s "$lc_dir/state/server.pid"
+assert_output_contains "start reports the pid" "starting llama server" cat "$lc_dir/start.out"
+assert_output_contains "start confirms readiness" "llama server ready" cat "$lc_dir/start.out"
+assert_output_contains "start ran the configured model" \
+  "$lc_dir/models/local.gguf" cat "$lc_dir/state/server.log"
+
+lc status > "$lc_dir/status.out"
+assert_output_contains "status reports the server running" "is running" cat "$lc_dir/status.out"
+
+lc start > "$lc_dir/start-again.out"
+assert_output_contains "start is idempotent while running" "already running" cat "$lc_dir/start-again.out"
+
+lc stop > "$lc_dir/stop.out"
+assert_output_contains "stop confirms shutdown" "llama server stopped" cat "$lc_dir/stop.out"
+assert_success "stop removes the pid file" test ! -e "$lc_dir/state/server.pid"
+
+lc status > "$lc_dir/status-after.out"
+assert_output_contains "status reports stopped after stop" "not running" cat "$lc_dir/status-after.out"
+
+# A stale pid file must never be trusted, and must never be killed.
+echo "999999" > "$lc_dir/state/server.pid"
+lc status > "$lc_dir/status-stale.out"
+assert_output_contains "stale pid file is not reported as running" "not running" cat "$lc_dir/status-stale.out"
+lc stop > "$lc_dir/stop-stale.out"
+assert_output_contains "stop ignores a stale pid file" "not running" cat "$lc_dir/stop-stale.out"
+
+rm -rf "$lc_dir"
+
 section "rig-llama system-prompt proxy wiring"
 
 proxy="$RIG_REPO/unix/common/libexec/rig-llama-proxy"

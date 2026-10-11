@@ -56,9 +56,10 @@ rig stow --all              # restow all dotfiles
 rig stow config zsh         # restow selected packages
 rig migrate                 # run pending migrations
 rig ocr                     # capture a region and copy extracted text
-rig llama list              # list local GGUF models
-rig llama chat model.gguf   # chat with a local model
-rig llama server model.gguf # OpenAI-compatible server on :8080
+rig llama list              # show the model chain and downloaded models
+rig llama start             # run the API in the background on :8080
+rig llama status            # report state, memory, and active model
+rig llama stop              # stop the background server
 ```
 
 ## Running individual setup modules
@@ -177,11 +178,22 @@ Local models use `llama-cpp` from the `sneed/llama-cpp-vulkan` COPR:
 ```bash
 rig llama list
 rig llama pull https://example.com/model.gguf
-rig llama chat model.gguf
-rig llama server model.gguf
+rig llama chat
+rig llama start
+rig llama status
+rig llama stop
 ```
 
-Models are stored in `~/.local/share/llama.cpp/models`.
+`rig llama start` runs the server in the background and returns when the API
+answers on `http://127.0.0.1:8080/v1`. `rig llama server` does the same in the
+foreground until you press Ctrl-C.
+
+The model comes from the `.llama` block in `unix/fedora/config.json`. The
+`model` key is an ordered list: entries are tried in order and the first usable
+one wins, so a second entry acts as a fallback.
+
+Models are stored in `~/.local/share/llama.cpp/models`. Models referenced as
+Hugging Face repos are cached by llama.cpp under `~/.cache/huggingface`.
 
 ## Hibernation
 
