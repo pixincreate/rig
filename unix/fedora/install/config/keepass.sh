@@ -69,8 +69,9 @@ Type=oneshot
 # flock serialises runs. The unit starts at login and from the path unit, so the
 # lock stops two runs from overlapping.
 #
-# --include matches the database and any bisync conflict copy, so a conflict is
-# visible on both sides instead of stranded on one.
+# --include is deliberately wider than *.kdbx. A conflict copy is named
+# keepass.kdbx.conflict1, so a *.kdbx filter leaves the remote with no matching
+# file after a conflict, and the next run aborts until a manual --resync.
 #
 # --force is required because bisync aborts when every file on a side changed,
 # which is always true for a one-file sync. The dangerous case, an empty or
@@ -80,7 +81,7 @@ Type=oneshot
 # A version that gets replaced or deleted is archived under the backup dirs.
 ExecStart=/usr/bin/flock -w 60 %t/keepass-filen-sync.lock \\
     /usr/bin/rclone bisync $db_dir $remote \\
-    --include=${db_name%.kdbx}*.kdbx \\
+    --include=${db_name%.kdbx}* \\
     --backup-dir1=$local_backup_dir/last \\
     --backup-dir2=$remote_backup_dir/last \\
     --force \\
