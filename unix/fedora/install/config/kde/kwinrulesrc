@@ -38,8 +38,7 @@ wmclass=obsidian
 wmclassmatch=1
 
 [General]
-count=6
-rules=2d7045a8-76b9-4db7-afe2-aead2e7d9002,879db27a-cb76-40d2-ba48-07900a93a95d,b6baa12f-e77d-42ca-aaa6-1b83a208ec49,79336585-72b1-45a5-a4e7-f197d698eae5,ce4360af-f58d-490e-95c6-7d0c9887954c,a5c3f362-b617-4b35-8f76-b1b9652282ae
+Order=2d7045a8-76b9-4db7-afe2-aead2e7d9002,879db27a-cb76-40d2-ba48-07900a93a95d,b6baa12f-e77d-42ca-aaa6-1b83a208ec49,79336585-72b1-45a5-a4e7-f197d698eae5,ce4360af-f58d-490e-95c6-7d0c9887954c,a5c3f362-b617-4b35-8f76-b1b9652282ae
 
 [a5c3f362-b617-4b35-8f76-b1b9652282ae]
 Description=Application settings for Zen
