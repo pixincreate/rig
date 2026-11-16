@@ -1,0 +1,202 @@
+#!/bin/bash
+# rig:summary=Report which ASUS firmware features this laptop implements
+# rig:usage=rig hw asus caps
+
+# The asus-wmi driver creates a sysfs attribute only when the embedded
+# controller advertises the matching device ID. A missing attribute therefore
+# means the firmware does not implement the feature, not that the kernel
+# lacks the code.
+
+set -uo pipefail
+
+WMI_DIR=/sys/devices/platform/asus-nb-wmi
+ARMOURY_DIR=/sys/devices/virtual/firmware-attributes/asus-armoury
+PCI_IDS=/usr/share/hwdata/pci.ids
+
+section() {
+  printf '\n== %s ==\n' "$1"
+}
+
+present() {
+  printf '  %-14s %-32s %s\n' "$1" "$2" "$3"
+}
+
+pci_lookup() {
+  local id="$1"
+  [[ -f "$PCI_IDS" ]] || return 1
+  awk -v id="$id" '
+    /^[0-9a-f][0-9a-f][0-9a-f][0-9a-f]  / { vendor = $1; next }
+    /^[ \t][0-9a-f][0-9a-f][0-9a-f][0-9a-f]  / {
+      if ($1 == id) {
+        name = $2
+        for (i = 3; i <= NF; i++) name = name " " $i
+        print vendor " " name
+        exit
+      }
+    }
+  ' "$PCI_IDS"
+}
+
+section "Platform"
+product=$(cat /sys/class/dmi/id/product_name 2>/dev/null)
+vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)
+bios=$(cat /sys/class/dmi/id/bios_version 2>/dev/null)
+bios_date=$(cat /sys/class/dmi/id/bios_date 2>/dev/null)
+printf '  %-14s %s\n' "Model" "${vendor} ${product}"
+printf '  %-14s %s (%s)\n' "BIOS" "$bios" "$bios_date"
+
+klog=$(journalctl -k -b 0 --no-pager 2>/dev/null)
+if [[ -z "$klog" ]]; then
+  klog=$(dmesg 2>/dev/null)
+fi
+
+interface="unknown"
+if [[ "$klog" == *"Detected ATK, not ASUSWMI"* ]]; then
+  interface="ATK (older AMI interface, DSTS presence queries)"
+elif [[ "$klog" == *"Detected ASUSWMI"* ]]; then
+  interface="ASUSWMI"
+fi
+printf '  %-14s %s\n' "WMI interface" "$interface"
+
+section "Firmware feature probe"
+printf '  %-14s %-32s %s\n' "DEVID" "Feature" "Result"
+
+probe_attr() {
+  local devid="$1" name="$2" path="$3"
+  if [[ -e "$path" ]]; then
+    present "$devid" "$name" "present"
+  else
+    present "$devid" "$name" "not advertised by firmware"
+  fi
+}
+
+probe_attr 0x00090020 "dgpu_disable (GPU power)" "$WMI_DIR/dgpu_disable"
+probe_attr 0x00090016 "gpu_mux_mode (display mux)" "$WMI_DIR/gpu_mux_mode"
+probe_attr 0x00090019 "egpu_enable (eGPU)" "$WMI_DIR/egpu_enable"
+probe_attr 0x00110018 "fan_boost_mode" "$WMI_DIR/fan_boost_mode"
+probe_attr 0x00120075 "throttle_thermal_policy" "$WMI_DIR/throttle_thermal_policy"
+
+if [[ -d "$ARMOURY_DIR/attributes" ]]; then
+  for attr in "$ARMOURY_DIR/attributes"/*; do
+    [[ -e "$attr" ]] || continue
+    present "armoury" "$(basename "$attr")" "present"
+  done
+else
+  present "armoury" "firmware-attributes tree" "not advertised by firmware"
+fi
+
+fan_curve_node=$(find /sys/devices/platform -maxdepth 3 -name 'asus_custom_fan_curve*' 2>/dev/null | head -1)
+if [[ -n "$fan_curve_node" ]]; then
+  present 0x00110024 "custom fan curves" "present"
+else
+  present 0x00110024 "custom fan curves" "not advertised by firmware"
+fi
+
+section "Firmware rejections in the kernel log"
+rejections=$(grep -E 'asus_wmi: .*failed: -[0-9]+' <<<"$klog" | sed 's/^.*asus_wmi: //' | sort -u)
+if [[ -n "$rejections" ]]; then
+  while IFS= read -r line; do
+    printf '  %s\n' "$line"
+  done <<<"$rejections"
+else
+  printf '  none\n'
+fi
+
+section "Platform profile"
+if [[ -f /sys/firmware/acpi/platform_profile ]]; then
+  printf '  %-16s %s\n' "Current" "$(cat /sys/firmware/acpi/platform_profile)"
+  printf '  %-16s %s\n' "Choices" "$(cat /sys/firmware/acpi/platform_profile_choices 2>/dev/null)"
+else
+  printf '  %-16s %s\n' "ACPI" "not available"
+fi
+if [[ -f "$WMI_DIR/throttle_thermal_policy" ]]; then
+  printf '  %-16s %s\n' "Thermal policy" "$(cat "$WMI_DIR/throttle_thermal_policy")"
+fi
+if [[ -f "$WMI_DIR/fan_boost_mode" ]]; then
+  printf '  %-16s %s\n' "Fan boost mode" "$(cat "$WMI_DIR/fan_boost_mode")"
+fi
+
+section "Fan sensor"
+hwmon=$(grep -l 'asus' /sys/class/hwmon/hwmon*/name 2>/dev/null | head -1)
+if [[ -n "$hwmon" ]]; then
+  hwdir=$(dirname "$hwmon")
+  printf '  %-16s %s\n' "hwmon" "$(basename "$hwdir")"
+  for fan in "$hwdir"/fan*_input; do
+    [[ -e "$fan" ]] || continue
+    label=$(cat "${fan%_input}_label" 2>/dev/null)
+    printf '  %-16s %s rpm (label: %s)\n' "$(basename "$fan")" "$(cat "$fan")" "${label:-none}"
+  done
+  if [[ -f "$hwdir/fan1_input" ]] && [[ "$(cat "$hwdir/fan1_input")" == "0" ]]; then
+    printf '  %-16s %s\n' "Tachometer" "reads zero, the sensor is not wired up"
+  fi
+else
+  printf '  %-14s %s\n' "hwmon" "not found"
+fi
+
+section "Discrete GPU"
+dgpu_pci=$(lspci -nn 2>/dev/null | grep -i '10de:' | head -1)
+if [[ -n "$dgpu_pci" ]]; then
+  printf '  %-14s %s\n' "On bus" "yes"
+  printf '  %-14s %s\n' "Device" "$dgpu_pci"
+  devid=$(grep -oE '10de:[0-9a-f]{4}' <<<"$dgpu_pci" | head -1 | cut -d: -f2)
+  name=$(pci_lookup "$devid")
+  if [[ -n "$name" ]]; then
+    printf '  %-14s %s\n' "Name" "$name"
+  fi
+else
+  printf '  %-14s %s\n' "On bus" "no (detached from the PCI tree)"
+  devid=$(grep -oE 'pci [0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]: \[10de:[0-9a-f]{4}\] type 00 class 0x0300' <<<"$klog" | tail -1 | grep -oE '10de:[0-9a-f]{4}' | cut -d: -f2)
+  if [[ -z "$devid" ]]; then
+    devid=$(grep -oE 'pci [0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]: \[10de:[0-9a-f]{4}\]' <<<"$klog" | tail -1 | grep -oE '10de:[0-9a-f]{4}' | cut -d: -f2)
+  fi
+  if [[ -n "$devid" ]]; then
+    name=$(pci_lookup "$devid")
+    printf '  %-14s %s (last seen in the kernel log)\n' "Device id" "10de:$devid"
+    if [[ -n "$name" ]]; then
+      printf '  %-14s %s\n' "Name" "$name"
+    fi
+  fi
+fi
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+  if nvidia-smi -L >/dev/null 2>&1; then
+    printf '  %-14s %s\n' "nvidia-smi" "driver loaded"
+  else
+    printf '  %-14s %s\n' "nvidia-smi" "driver not running"
+  fi
+fi
+
+section "supergfxctl"
+if command -v supergfxctl >/dev/null 2>&1; then
+  printf '  %-14s %s\n' "Version" "$(supergfxctl -v 2>/dev/null)"
+  printf '  %-14s %s\n' "Mode" "$(supergfxctl -g 2>/dev/null)"
+  printf '  %-14s %s\n' "Supported" "$(supergfxctl -s 2>/dev/null)"
+  printf '  %-14s %s\n' "dGPU status" "$(supergfxctl -S 2>/dev/null)"
+  printf '  %-14s %s\n' "Pending" "$(supergfxctl -p 2>/dev/null)"
+else
+  printf '  %-14s %s\n' "supergfxctl" "not installed"
+fi
+
+if [[ -f /etc/supergfxd.conf ]]; then
+  section "supergfxd config"
+  grep -E '"(mode|no_logind|always_reboot|logout_timeout_s|hotplug_type)"' /etc/supergfxd.conf | sed 's/^/  /'
+fi
+
+section "Summary"
+missing_list=()
+for entry in "dgpu_disable:$WMI_DIR/dgpu_disable" \
+             "gpu_mux_mode:$WMI_DIR/gpu_mux_mode" \
+             "egpu_enable:$WMI_DIR/egpu_enable"; do
+  name="${entry%%:*}"
+  path="${entry#*:}"
+  [[ -e "$path" ]] || missing_list+=("$name")
+done
+[[ -n "$fan_curve_node" ]] || missing_list+=("custom_fan_curve")
+
+if (( ${#missing_list[@]} > 0 )); then
+  printf '  Firmware does not advertise: %s\n' "${missing_list[*]}"
+  printf '  These features need a BIOS update or a different model.\n'
+else
+  printf '  Firmware advertises every probed feature.\n'
+fi
+printf '  A mode switch needs a logout unless no_logind is true.\n'

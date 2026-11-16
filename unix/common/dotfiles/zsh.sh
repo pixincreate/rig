@@ -84,24 +84,31 @@ alias dnf-clean='sudo dnf autoremove && sudo dnf clean all'
 alias trigger_secure_boot='sudo kmodgenca -a && sudo mokutil --import /etc/pki/akmods/certs/public_key.der'
 alias zed=zed-preview
 
-# GPU mode switching (supergfxctl on ASUS laptops)
-supergfxmnl() {
-  case "${1:-}" in
-    hybrid|integrated)
-      sudo sed -i "s/\"\(Integrated\|Hybrid\)\"/\"${(C)1}\"/" /etc/supergfxd.conf
-      sudo systemctl restart supergfxd
-      ;;
-    status)
-      echo "Mode: $(supergfxctl -g)"
-      echo "Power: $(supergfxctl -s 2>/dev/null || echo "N/A")"
-      ;;
-    *)
-      echo "Usage: supergfxmnl <hybrid|integrated|status>"
-      return 1
-      ;;
-  esac
+# Switch the discrete GPU mode on this ASUS laptop.
+#
+# Usage: gpu hybrid|integrated
+#
+# The switch rebinds the discrete GPU, so supergfxctl wants the graphical
+# session to end first. The command disables that wait, so the session and
+# the running work survive the switch.
+#
+# The oh-my-zsh git plugin defines `alias gpu='git push upstream'`. zsh
+# expands aliases before it parses a function definition, so without this
+# unalias the file fails with "defining function based on alias".
+unalias gpu 2>/dev/null
+
+gpu() {
+  rig gpu mode "$@"
 }
 
+# Report which ASUS firmware features this laptop implements.
+#
+# Usage: gpu-caps
+gpu-caps() {
+  rig hw asus caps "$@"
+}
+
+# rig manages everything above this line. Add your own config below — rig will never edit it.
 # Wayland backends
 export GDK_BACKEND=wayland
 export QT_QPA_PLATFORM=wayland

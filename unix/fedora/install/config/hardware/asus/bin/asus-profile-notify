@@ -1,41 +1,49 @@
 #!/bin/bash
 
-# Shows OSD toast when power profile changes via Fn+F5
-# Also switches supergfxctl GPU mode based on profile
+# Shows an OSD toast when the power profile changes via Fn+F5.
+#
+# This script does not change the GPU mode. The thermal profile and the GPU
+# mode are separate settings. supergfxctl has to end the graphical session
+# before it can rebind the discrete GPU, and a request made from inside the
+# session always fails. The failed request leaves the GPU detached, so the
+# script reports the mode instead of changing it.
 
 current_profile=$(asusctl profile get 2>/dev/null | grep "Active profile" | awk '{print $3}')
 
 case "$current_profile" in
-    "Quiet")
-        icon="battery-profile-powersave"
-        message="Profile: Quiet (Power Saver)"
-        supergfxctl -m Integrated 2>/dev/null || true
-        ;;
-    "Balanced")
-        icon="battery-060"
-        message="Profile: Balanced"
-        supergfxctl -m Integrated 2>/dev/null || true
-        ;;
-    "Performance")
-        icon="battery-profile-performance"
-        message="Profile: Performance"
-        supergfxctl -m Hybrid 2>/dev/null || true
-        ;;
-    *)
-        icon="preferences-system-power-management"
-        message="Profile: $current_profile"
-        ;;
+  "Quiet")
+    icon="battery-profile-powersave"
+    message="Profile: Quiet (Power Saver)"
+    ;;
+  "Balanced")
+    icon="battery-060"
+    message="Profile: Balanced"
+    ;;
+  "Performance")
+    icon="battery-profile-performance"
+    message="Profile: Performance"
+    ;;
+  *)
+    icon="preferences-system-power-management"
+    message="Profile: $current_profile"
+    ;;
 esac
+
+# Report the current GPU mode so the toast shows both settings.
+gpu_mode=$(timeout 2 supergfxctl -g 2>/dev/null)
+if [[ -n "$gpu_mode" ]]; then
+  message="$message - GPU: $gpu_mode"
+fi
 
 # Show OSD toast notification
 if command -v qdbus &> /dev/null; then
-    qdbus org.kde.plasmashell /org/kde/osdService org.kde.osdService.showText "$icon" "$message" 2>/dev/null
+  qdbus org.kde.plasmashell /org/kde/osdService org.kde.osdService.showText "$icon" "$message" 2>/dev/null
 elif command -v dbus-send &> /dev/null; then
-    dbus-send --type=method_call --dest=org.kde.plasmashell /org/kde/osdService org.kde.osdService.showText string:"$icon" string:"$message" 2>/dev/null
+  dbus-send --type=method_call --dest=org.kde.plasmashell /org/kde/osdService org.kde.osdService.showText string:"$icon" string:"$message" 2>/dev/null
 elif command -v notify-send &> /dev/null; then
-    notify-send -i "$icon" -t 2000 "ASUS Profile" "$message"
+  notify-send -i "$icon" -t 2000 "ASUS Profile" "$message"
 else
-    echo "$message"
+  echo "$message"
 fi
 
 exit 0

@@ -1,0 +1,66 @@
+#!/bin/bash
+# rig:summary=Switch the ASUS discrete GPU mode without a logout or reboot
+# rig:usage=rig gpu mode [hybrid|integrated]
+
+set -euo pipefail
+
+target="${1:-}"
+case "$target" in
+  hybrid|integrated) ;;
+  *)
+    echo "usage: rig gpu mode [hybrid|integrated]" >&2
+    exit 1
+    ;;
+esac
+
+if ! command -v supergfxctl >/dev/null 2>&1; then
+  echo "supergfxctl is not installed" >&2
+  exit 1
+fi
+
+config=/etc/supergfxd.conf
+if [[ ! -f "$config" ]]; then
+  echo "$config not found" >&2
+  exit 1
+fi
+
+current=$(supergfxctl -g 2>/dev/null || echo "")
+if [[ "${current,,}" == "$target" ]]; then
+  echo "GPU mode is already $current"
+  exit 0
+fi
+
+# supergfxctl waits for the graphical session to end before it can rebind the
+# discrete GPU. The wait is capped at 30 seconds upstream, so a request made
+# from inside the session always fails, and the failed request leaves the GPU
+# detached. Turning the login wait off lets the switch finish while the
+# session keeps running.
+if ! grep -q '"no_logind": true' "$config"; then
+  echo "Disabling the supergfxctl login wait"
+  sudo sed -i -E 's/"no_logind": (true|false)/"no_logind": true/' "$config"
+  sudo systemctl restart supergfxd
+fi
+
+echo "Switching the GPU mode to $target"
+supergfxctl -m "$target"
+
+# The daemon runs the switch in the background and writes the new mode only
+# when it succeeds, so poll the mode instead of trusting the exit status.
+for _ in $(seq 1 30); do
+  sleep 1
+  mode=$(supergfxctl -g 2>/dev/null || echo "")
+  if [[ "${mode,,}" == "$target" ]]; then
+    echo "GPU mode: $mode"
+    break
+  fi
+done
+
+if [[ "${mode,,}" != "$target" ]]; then
+  echo "The GPU mode switch did not complete" >&2
+  echo "Check the daemon log with: journalctl -u supergfxd -n 50" >&2
+  exit 1
+fi
+
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+  nvidia-smi --query-gpu=name --format=csv,noheader
+fi
