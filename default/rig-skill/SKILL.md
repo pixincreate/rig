@@ -156,12 +156,12 @@ Wrapper around llama.cpp binaries (`llama-server`, `llama-cli`). Everything
 comes from the `config.json` `.llama` block per platform, so the common case
 is one bare command with no arguments.
 
-| Key | Purpose |
-| --- | --- |
-| `.llama.model` | **Ordered chain** of models. First usable entry wins |
-| `.llama.host` / `.llama.port` | Bind address. Public port is the proxy; llama-server binds port+1 |
-| `.llama.system_prompt_file` | Base system prompt injected by the proxy |
-| `.llama.server_args` | Permanent `llama-server` flags. A JSON array of strings |
+- `.llama.model`: An **ordered chain** of models.
+  The first usable entry wins.
+- `.llama.host` / `.llama.port`: The proxy bind address and public port.
+  `llama-server` binds to the next port.
+- `.llama.system_prompt_file`: The base system prompt injected by the proxy.
+- `.llama.server_args`: Permanent `llama-server` flags as a JSON array of strings.
 
 - `rig llama pull <url>` — download a GGUF into `~/.local/share/llama.cpp/models`
 - `rig llama list` — show the configured chain and the downloaded models
@@ -213,12 +213,12 @@ model argument is **not** part of the chain: if it fails to resolve, the command
 errors out rather than silently substituting another model.
 
 **Argument order: model first, then flags.** The parser takes the model only
-from arguments that appear *before the first flag*. Everything from the first
+from arguments that appear _before the first flag_. Everything from the first
 flag onward is forwarded verbatim. This keeps the value of a valued flag from
 being mistaken for the model:
 
 ```bash
-rig llama server -ngl 20                    # OK: -ngl 20 forwarded, config model used
+rig llama server -ngl 20                   # OK: config model, -ngl 20 forwarded
 rig llama server model.gguf -ngl 20         # OK: model.gguf used, -ngl 20 forwarded
 rig llama server --model model.gguf -ngl 20 # OK: --model reaches llama-server as-is
 ```
@@ -229,7 +229,7 @@ flag value. If the model came after the flag, the parser would stop looking
 and use the config default.
 
 **Prefer config over flags.** Put anything you always want into
-`.llama.server_args`. Those are applied *before* command-line flags, so a flag
+`.llama.server_args`. Those are applied _before_ command-line flags, so a flag
 you type ad hoc still wins for that run:
 
 ```json
@@ -255,7 +255,8 @@ pointing at `http://127.0.0.1:8080/v1`.
 ### Other notable commands
 
 - `rig-ocr` — tesseract-based OCR helper (common)
-- `rig-stow`, `rig pkg-add`, `rig-migrate` — dotfiles stow, package add (alias for `pkg-add`), update migrations
+- `rig-stow`, `rig pkg-add`, `rig-migrate` — dotfiles stow,
+  package add (alias for `pkg-add`), update migrations
 - `rig-drift` — declared-vs-installed package drift report (`--apply` to converge)
 - `rig-webapp-install` / `rig-launch-webapp` — site-specific web apps
 
@@ -268,7 +269,8 @@ the same change to the counterpart platform.**
 
 Examples of changes that need mirroring:
 
-- A new platform-specific `rig-*` libexec script added to Fedora → add the equivalent to macOS
+- A new platform-specific `rig-*` libexec script added to Fedora →
+  add the equivalent to macOS
 - A new shared package added to Fedora package list → add to macOS equivalent
 - A new install module that isn't hardware-specific → create on both platforms
 

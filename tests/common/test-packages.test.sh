@@ -46,7 +46,10 @@ EOF
 printf '#!/bin/bash\nexec "$@"\n' >"$STUB_BIN/sudo"
 # no-op npm/cargo: keeps the drift reverse scan hermetic (no real manager data)
 printf '#!/bin/bash\nexit 0\n' >"$STUB_BIN/npm"
-printf '#!/bin/bash\ncase "$1" in install) exit 1 ;; *) exit 0 ;; esac\n' >"$STUB_BIN/cargo"
+cat >"$STUB_BIN/cargo" <<'EOF'
+#!/bin/bash
+case "$1" in install) exit 1 ;; *) exit 0 ;; esac
+EOF
 chmod +x "$STUB_BIN/rpm" "$STUB_BIN/dnf" "$STUB_BIN/sudo" "$STUB_BIN/npm" "$STUB_BIN/cargo"
 
 PKG_ADD="$RIG_REPO/unix/common/libexec/rig-pkg-add"

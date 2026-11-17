@@ -221,7 +221,7 @@ rig webapp-remove ChatGPT  # Specific app
 ├── unix/
 │   ├── setup              # Common entry point (OS detection)
 │   ├── common/            # Cross-platform scripts
-│   │   ├── libexec/       # Shared CLI commands (pkg-add, drift, ocr, stow, reset, ...)
+│   │   ├── libexec/       # Shared CLI commands
 │   │   ├── helpers/       # Logging, common functions, package backends
 │   │   ├── dotfiles/      # Stow, fonts, zsh
 │   │   ├── config/        # Git, NextDNS, Rust
