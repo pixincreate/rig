@@ -2,23 +2,16 @@
 Description=Picture-In-Picture
 above=true
 aboverule=2
-
-# Make PiP appear on all virtual desktops
+decorationpolicy=none
+decorationpolicyrule=2
 desktop=-1
 desktoprule=2
 desktops=\\0
 desktopsrule=3
-
-# Remove borders for a clean floating PiP
-noborder=true
-noborderrule=2
-
-# Hide PiP from taskbar and pager
 skippager=true
 skippagerrule=2
 skiptaskbar=true
 skiptaskbarrule=2
-
 title=Picture-in-Picture
 titlematch=3
 types=1

@@ -68,7 +68,6 @@ setup_nextdns_systemd_resolved() {
     local resolved_dir="/etc/systemd/resolved.conf.d"
     local resolved_conf="$resolved_dir/nextdns.conf"
 
-    # shellcheck disable=SC2024
     if [[ $EUID -eq 0 ]]; then
         mkdir -p "$resolved_dir"
         cat >"$resolved_conf" <<EOF

@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# shellcheck disable=SC1091 # $RIG_INSTALL is resolved at runtime by the installer
 source "$RIG_INSTALL/helpers/logging.sh"
 
 log_section "Web Applications"
